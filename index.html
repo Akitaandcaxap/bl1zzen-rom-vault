@@ -313,8 +313,9 @@
 </div>
 
 <script>
-    const MANUAL_OWNER = ''; 
-    const MANUAL_REPO  = ''; 
+    const MANUAL_OWNER = 'akitaandcaxap';
+    const MANUAL_REPO = 'bl1zzen-rom-vault';
+    const EXTERNAL_JSON_PATH = './external-files.json';
 
     const ALLOWED_EXTENSIONS = [
         'img', 'zip', 'tar', 'md5', 'bin', 'lz4', 'xz', 'gz', 'apk', 'sh', 'bat', 'payload'
@@ -336,7 +337,7 @@
             return { owner, repo };
         }
 
-        return { owner: 'bl1zzen', repo: 'bl1zzen.github.io' };
+        return { owner: 'akitaandcaxap', repo: 'bl1zzen-rom-vault' };
     }
 
     function formatBytes(bytes) {
@@ -354,6 +355,32 @@
         return 'terminal';
     }
 
+    async function fetchExternalFiles() {
+        try {
+            const res = await fetch(`${EXTERNAL_JSON_PATH}?t=${Date.now()}`);
+            if (!res.ok) return [];
+            const data = await res.json();
+            if (!Array.isArray(data)) return [];
+
+            return data
+                .filter(item => item && item.name && item.downloadUrl)
+                .map(item => {
+                    const ext = (item.ext || (item.name.includes('.') ? item.name.split('.').pop() : '')).toLowerCase();
+                    return {
+                        name: item.name,
+                        path: item.path || item.name,
+                        folder: item.folder || 'External',
+                        ext,
+                        size: item.size || 0,
+                        downloadUrl: item.downloadUrl
+                    };
+                })
+                .filter(file => !file.ext || ALLOWED_EXTENSIONS.includes(file.ext));
+        } catch (_) {
+            return [];
+        }
+    }
+
     async function fetchRepoFiles() {
         const { owner, repo } = detectRepoInfo();
         const repoLabel = document.getElementById('repoLabel');
@@ -365,18 +392,23 @@
             const repoData = await repoRes.json();
             const defaultBranch = repoData.default_branch || 'main';
 
-            const treeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`);
-            if (!treeRes.ok) throw new Error('Не удалось прочитать список файлов');
+            const [treeRes, relRes, externalFiles] = await Promise.all([
+                fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`),
+                fetch(`https://api.github.com/repos/${owner}/${repo}/releases`),
+                fetchExternalFiles()
+            ]);
+
+            if (!treeRes.ok) throw new Error('Не удалось прочитать список файлов репозитория');
             const treeData = await treeRes.json();
 
-            allFiles = (treeData.tree || [])
+            const repoFiles = (treeData.tree || [])
                 .filter(item => item.type === 'blob')
                 .map(item => {
                     const name = item.path.split('/').pop();
                     const folder = item.path.includes('/') ? item.path.substring(0, item.path.lastIndexOf('/')) : '';
                     const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
                     const downloadUrl = `https://github.com/${owner}/${repo}/raw/${defaultBranch}/${encodeURI(item.path)}`;
-                    
+
                     return {
                         name,
                         path: item.path,
@@ -388,6 +420,28 @@
                 })
                 .filter(file => ALLOWED_EXTENSIONS.includes(file.ext));
 
+            const releaseFiles = [];
+            if (relRes.ok) {
+                const releases = await relRes.json();
+                for (const release of releases) {
+                    for (const asset of (release.assets || [])) {
+                        const name = asset.name;
+                        const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+                        if (!ALLOWED_EXTENSIONS.includes(ext)) continue;
+
+                        releaseFiles.push({
+                            name,
+                            path: `${release.tag_name}/${name}`,
+                            folder: `Release: ${release.tag_name}`,
+                            ext,
+                            size: asset.size,
+                            downloadUrl: asset.browser_download_url
+                        });
+                    }
+                }
+            }
+
+            allFiles = [...externalFiles, ...releaseFiles, ...repoFiles];
             renderFiles(allFiles);
 
         } catch (err) {
